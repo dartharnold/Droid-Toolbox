@@ -1,4 +1,4 @@
-/* Droid Toolbox v0.68a : ruthsarian@gmail.com
+/* Droid Toolbox v0.70 : ruthsarian@gmail.com
  * 
  * A program to work with droids from the Droid Depot at Galaxy's Edge.
  * 
@@ -25,7 +25,7 @@
  *  OpenFontRender: https://github.com/takkaO/OpenFontRender
  *  
  * NOTE 1: 
- *  After installing or updating the TFT_eSPI library you MUST edit User_Setup_Select.h as follows 
+ *  After installing _OR_UPDATING_ the TFT_eSPI library you _MUST_ edit User_Setup_Select.h as follows 
  *     1. comment out the line "#include <User_Setup.h>" (line 22-ish)
  *     2. uncomment the line "#include <User_Setups/Setup25_TTGO_T_Display.h>" (line 61-ish) for T-Display
  *        or "#include <User_Setups/Setup206_LilyGo_T_Display_S3.h>" for the T-Display-32
@@ -45,6 +45,11 @@
  *   to uninstall it in order for this code to compile correctly. To uninstall a library locate your arduino 
  *   libraries folder and delete the ArduinoBLE folder.
  *
+ * NOTE 4:
+ *   It seems when the serial port is open, button 0 doesn't work. If your T-Display is connected via USB to 
+ *   your computer and button 0 does not work, change the port in Arduino IDE to something else. Don't forget
+ *   to change it back when you want to upload new code to the T-Display.
+ *
  * TTGO T-Display Board Configuration (defaults)
  *   Board: ESP32 Dev Module
  *   Upload Speed: 921600
@@ -52,7 +57,7 @@
  *   Flash Freq: 80MHz
  *   Flash Mode: QIO
  *   Flash Size: 4MB (32Mb)
- *   Partition Scheme: Default 4MB with spiffs
+ *   Partition Scheme: Huge App (3MB No OTA/1MB SPIFFS)
  *   Core Debug Level: None
  *   PSRAM: Disabled
  * 
@@ -81,6 +86,8 @@
  *     https://programmer.ink/think/arduino-development-tft_espi-library-learning.html
  *     https://programmer.ink/think/color-setting-and-text-display-esp32-learning-tour-arduino-version.html.
  *     https://github.com/nkolban/esp32-snippets/blob/fe3d318acddf87c6918944f24e8b899d63c816dd/cpp_utils/BLEAdvertisedDevice.h
+ *     https://randomnerdtutorials.com/esp32-save-data-permanently-preferences/
+ *     https://espressif-docs.readthedocs-hosted.com/projects/arduino-esp32/en/latest/api/preferences.html
  *
  * TODO
  *   scanner:
@@ -97,11 +104,14 @@
  *   other: 
  *     is there any value in scanning for SWGE East/West beacon (used by the Disney Play app) and identifying which location you're in based off that?
  *     ability save beacons that are defined in EXPERT mode?
- *     store currently selected font in non-volatile memory and retrieve on boot
  *     revisit auto shutoff. can it not require a reset to wake up?
  *     add option, through defines, to rotate display 180 degrees so buttons are on the right
  *
  * HISTORY
+ *   v0.70 : Fixed beacon menu font size issues with TTGO T-Display
+ *           thanks to Knucklebuster620 for bringing this issue to my attention
+ *   v0.69 : The Wayfinder Version 
+ *           Toolbox remembers font selection through reboot/power cycle
  *   v0.68 : limited rotating beacons to just location beacon types. reason is that droids will not respond to a droid beacon if it's seen a location beacon within the last 2 hours. 
  *           added a few defines to let you control the interval settings for short and long presses
  *           changed initial interval to 60 seconds
@@ -163,14 +173,10 @@
  *   v0.10 : Initial Release
  */
 
- /* ** darth_update - description of changes
- *   - Changed version number format
- *   - Added code to set OFR font as default font
- *   - Changed SPLASH to ABOUT in order to have clock on Startup
- */
-
 #define USE_OFR_FONTS           // uncomment to use openFontRenderer (see notes above on how to install this library)
+#define USE_NVS                 // uncomment to enable use of non-volatile storage (NVS) to save preferences (last font used);
 //#define SERIAL_DEBUG_ENABLE     // uncomment to enable serial debug/monitor messages
+                                // if using seridal debug, you may need to select HUGE APP from the partition scheme option under tools menu
 
 #include <TFT_eSPI.h>
 #include <SPI.h>
@@ -179,30 +185,26 @@
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
 
-// ** darth_update - UPDATE - start
+#ifdef USE_OFR_FONTS            // load OpenFontRenderer and some fonts from https://aurekfonts.github.io/
+  #include "OpenFontRender.h"
+  #include "Aurebesh-English.h"
+  #include "Aurebeshred-Bold.h"
+  #include "Aurabesh.h"
+  #include "DroidobeshDepot-RegularModified.h"
+  #include "TFGunray-Bold.h"
+#endif
 
-  // disable AurebeshRedBold & TFGunrayBold as font options
-
-  #ifdef USE_OFR_FONTS            // load OpenFontRenderer and some fonts from https://aurekfonts.github.io/
-    #include "OpenFontRender.h"
-    #include "Aurebesh-English.h"
-    #include "DroidobeshDepot-RegularModified.h"
-    #include "Aurabesh.h"
-    //#include "Aurebeshred-Bold.h"
-    //#include "TFGunray-Bold.h"
-  #endif
-
-// ** darth_update - end
+#if defined (USE_NVS) && defined (USE_OFR_FONTS)  // no point in enabling saving of font preferences if OFR_FONTS aren't being used
+  #include <Preferences.h>
+  #define PREF_APP_NAME     "droid-toolbox"       // the name should not be changed
+  Preferences preferences;                        // create a preferences object to store variables in non-volatile storage (NVS)
+#endif
 
 #define C565(r,g,b)                         ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)    // macro to convert RGB values to TFT_eSPI color value
 
 // CUSTOMIZATIONS BEGIN -- These values can be changed to alter Droid Toolbox's behavior.
 
-// ** darth_update - UPDATE start
-// Changed Version number to show Modded Version and Base Version
-// mod version is added to the end of the base version 
-  #define MSG_VERSION                         "v0.68a.01"                 // the version displayed on the splash screen at the lower right; β
-// ** darth_update - end
+#define MSG_VERSION                         "v0.70"                 // the version displayed on the splash screen at the lower right; β
 
 #define DEFAULT_TEXT_SIZE                   2                       // a generic size used throughout 
 #define DEFAULT_TEXT_COLOR                  TFT_DARKGREY            // e.g. 'turn off your droid remote'
@@ -210,16 +212,11 @@
 #define DEFAULT_SELECTED_TEXT_COLOR         TFT_WHITE
 #define DEFAULT_SELECTED_BORDER_COLOR       TFT_YELLOW
 
-// ** darth_update - UPDATE - start
-// change SPLASH to ABOUT
-
-#define ABOUT_TEXT_SIZE                    DEFAULT_TEXT_SIZE       // title is ABOUT_TEXT_SIZE+1 size, all other text is ABOUT_TEXT_SIZE
-#define ABOUT_TITLE_COLOR                  TFT_RED
-#define ABOUT_SUBTITLE_COLOR               TFT_ORANGE
-#define ABOUT_TEXT_COLOR                   TFT_LIGHTGREY
-#define ABOUT_VERSION_COLOR                C565(64,64,64)          // TFT_VERYDARKGREY
-
-// ** darth_update - end
+#define SPLASH_TEXT_SIZE                    DEFAULT_TEXT_SIZE       // title is SPLASH_TEXT_SIZE+1 size, all other text is SPLASH_TEXT_SIZE
+#define SPLASH_TITLE_COLOR                  TFT_RED
+#define SPLASH_SUBTITLE_COLOR               TFT_ORANGE
+#define SPLASH_TEXT_COLOR                   TFT_LIGHTGREY
+#define SPLASH_VERSION_COLOR                C565(64,64,64)          // TFT_VERYDARKGREY
 
 #define MENU_SELECT_CAPTION_TEXT_SIZE       DEFAULT_TEXT_SIZE
 #define MENU_SELECT_CAPTION_TEXT_PADDING    DEFAULT_TEXT_PADDING
@@ -229,6 +226,9 @@
 #define MENU_SELECT_TEXT_COLOR              C565(0,64,0)
 #define MENU_SELECT_SELECTED_TEXT_COLOR     TFT_GREEN
 #define MENU_SELECT_SELECTED_BORDER_COLOR   TFT_BLUE
+
+#define BEACON_MENU_SELECT_TEXT_PADDING     8                       // beacon menus use MENU_SELECT_* values except for these two
+#define BEACON_MENU_SELECT_TEXT_SIZE        (DEFAULT_TEXT_SIZE + 1)
 
 #define BEACON_INTERVAL_TITLE_TEXT_SIZE     DEFAULT_TEXT_SIZE
 #define BEACON_INTERVAL_TITLE_COLOR         TFT_BLUE
@@ -293,12 +293,6 @@
 #define LONG_PRESS_INTERVAL_INC             10              // this is multiplied by 10
 
 // static strings used throughout DroidToolbox
-// ** darth_update - ADD - start
-// Add Menu option text for About Screeen
-
-const char msg_about[]                  = "ABOUT";
-// ** darth_update - end
-
 const char ble_adv_name[]               = "DROIDTLBX";              // this is the name the toolbox's beacon will appear as, keep to 10 characters or less
 const char ble_adv_name_droid[]         = "DROID";
 const char msg_version[]                = MSG_VERSION;
@@ -514,36 +508,17 @@ const char* msg_beacon_location_param[NUM_BEACON_PARAMS] = {
     float y_offset;   // another workaround to help fix baseline alignment issues
   } dtb_font_t;
 
-  // ** darth_update - UPDATE - start
-
-    // disable AurebeshRedBold & TFGunrayBold as font options
-    // added comment with font indexes 
-
-    dtb_font_t dtb_fonts[] = {
-      { AurebeshEnglish,                sizeof(AurebeshEnglish),                 0.9, -0.08 },      // Font Index 1
-      { DroidobeshDepotRegularModified, sizeof(DroidobeshDepotRegularModified),  0.9, -0.06 },      // Font Index 2
-      { Aurabesh,                       sizeof(Aurabesh),                        1.0, -0.06 },      // Font Index 3
-      //{ AurebeshRedBold,                sizeof(AurebeshRedBold),                 1.0, -0.14 },    // Font Index 4
-      //{ TFGunrayBold,                   sizeof(TFGunrayBold),                    1.0,  0    },    // Font Index 5
-    };
-
-  // ** darth_update - end
+  dtb_font_t dtb_fonts[] = {
+    { AurebeshEnglish,                sizeof(AurebeshEnglish),                 0.9, -0.08 },
+    { DroidobeshDepotRegularModified, sizeof(DroidobeshDepotRegularModified),  0.9, -0.06 },
+    { Aurabesh,                       sizeof(Aurabesh),                        1.0, -0.06 },
+    { AurebeshRedBold,                sizeof(AurebeshRedBold),                 1.0, -0.14 },
+    { TFGunrayBold,                   sizeof(TFGunrayBold),                    1.0,  0    },
+  };
 
   #define NUM_FONTS (sizeof(dtb_fonts)/sizeof(dtb_font_t))
   OpenFontRender ofr;
-
-  // ** darth_update - REPLACE - start
-    // replace (uinit8_t dtb_font = 0;) with this block
-
-    // This block will setup varialbes for using one of the OFR fonts at startup
-
-    // Set Default Font by changing this Value to the desired font index listed above
-    uint8_t dtb_font = 3;
-    
-    // set OFR font on boot if set to 1
-    uint8_t ofr_boot= 1;
-    
-  // ** darth_update - end
+  uint8_t dtb_font = 0;
 #endif // USE_OFR_FONTS
 
 // CUSTOMIZATIONS END -- In theory you shouldn't have to edit anything below this line.
@@ -675,11 +650,8 @@ typedef enum {
   LONG_PRESS
 } button_press_t;
 
-// ** darth_update - UPDATE - start
-// change Splash Screen to About Screen
-
 typedef enum {
-  ABOUT,                  // about screen
+  SPLASH,                 // splash screen
   TOP_MENU,               // top menu; beacon or scanner
   BEACON_TYPE_MENU,       // display the types of beacons to pick from
   BEACON_DROID_LIST,      // display a list of droid beacons to pick from
@@ -711,8 +683,6 @@ typedef enum {
   VOLUME_TESTING,
 } system_state_t;
 
-// ** darth_update - end
-
 //
 // menus consist of a string and a state
 // the strings of the menu are displayed as a list
@@ -725,8 +695,7 @@ typedef struct {
 
 const menu_item_t top_menu[] = {
   { SCANNER_SCANNING,     msg_scanner   },
-  { BEACON_TYPE_MENU,     msg_beacon    },
-  { ABOUT,                msg_about     },
+  { BEACON_TYPE_MENU,     msg_beacon    }
 };
 
 const menu_item_t beacon_type_menu[] = {
@@ -807,14 +776,7 @@ uint32_t next_beacon_time = 0;        // the time, in ms, when the next beacon c
 TFT_eSPI tft = TFT_eSPI();      // display interface
 bool tft_update = true;         // flag to indicate display needs to be updated
 
-// ** darth_update - UPDATE - start
-// change startup to TOP_MENU for now but later make this the clock screen
-
-// replace SPLASH with desired start screen
-
-  system_state_t state = TOP_MENU;  // track the current state of the toolbox
-
-// ** darth_update - end
+system_state_t state = SPLASH;  // track the current state of the toolbox
 
 //
 // rendering lists is done with an array of strings (the items in the list)
@@ -897,9 +859,9 @@ void list_init() {
   for (i=0; i<lists[LIST_LOCATIONS].num_items; i++) {
     lists[LIST_LOCATIONS].items[i] = locations[i].name;
   }
-  lists[LIST_LOCATIONS].render_options.text_size              = MENU_SELECT_TEXT_SIZE;
+  lists[LIST_LOCATIONS].render_options.text_size              = BEACON_MENU_SELECT_TEXT_SIZE;
   lists[LIST_LOCATIONS].render_options.text_color             = MENU_SELECT_TEXT_COLOR;
-  lists[LIST_LOCATIONS].render_options.text_padding           = MENU_SELECT_TEXT_PADDING;
+  lists[LIST_LOCATIONS].render_options.text_padding           = BEACON_MENU_SELECT_TEXT_PADDING;
   lists[LIST_LOCATIONS].render_options.selected_text_color    = MENU_SELECT_SELECTED_TEXT_COLOR;
   lists[LIST_LOCATIONS].render_options.selected_border_color  = MENU_SELECT_SELECTED_BORDER_COLOR;
   lists[LIST_LOCATIONS].render_options.ofr_font_size          = 0;
@@ -912,9 +874,9 @@ void list_init() {
   for (i=0; i<lists[LIST_PERSONALITIES].num_items; i++) {
     lists[LIST_PERSONALITIES].items[i] = droid_personalities[i].name;
   }
-  lists[LIST_PERSONALITIES].render_options.text_size              = MENU_SELECT_TEXT_SIZE;
+  lists[LIST_PERSONALITIES].render_options.text_size              = BEACON_MENU_SELECT_TEXT_SIZE;
   lists[LIST_PERSONALITIES].render_options.text_color             = MENU_SELECT_TEXT_COLOR;
-  lists[LIST_PERSONALITIES].render_options.text_padding           = MENU_SELECT_TEXT_PADDING;
+  lists[LIST_PERSONALITIES].render_options.text_padding           = BEACON_MENU_SELECT_TEXT_PADDING;
   lists[LIST_PERSONALITIES].render_options.selected_text_color    = MENU_SELECT_SELECTED_TEXT_COLOR;
   lists[LIST_PERSONALITIES].render_options.selected_border_color  = MENU_SELECT_SELECTED_BORDER_COLOR;
   lists[LIST_PERSONALITIES].render_options.ofr_font_size          = 0;
@@ -968,6 +930,11 @@ uint16_t dtb_get_text_width(const char* msg) {
 void list_calculate_dynamic_font_properties() {
   uint8_t curr_list, curr_item, num_items;
   uint16_t font_height = 0, ofs_tmp;
+
+  #ifdef USE_OFR_FONTS
+    SERIAL_PRINT("dtb_font = ");
+    SERIAL_PRINTLN(dtb_font);
+  #endif
 
   // loop through all lists
   for (curr_list=0; curr_list<NUM_LISTS; curr_list++) {
@@ -1209,6 +1176,22 @@ void dtb_draw_string(const char* str, int32_t draw_x, int32_t draw_y, uint32_t d
   }
 
   #endif  // USE_OFR_FONTS
+}
+
+// load the font specified by dtb_font
+void dtb_load_font() {
+
+  #ifdef USE_OFR_FONTS
+
+    // load the new font
+    ofr.unloadFont();
+    if (dtb_font != 0 && ofr.loadFont(dtb_fonts[dtb_font - 1].data, dtb_fonts[dtb_font - 1].size)) {
+      dtb_font = 0;
+    }
+
+    // recalculate font properties based on new font
+    list_calculate_dynamic_font_properties();
+  #endif
 }
 
 personality_t* get_droid_personality(uint8_t id) {
@@ -1666,9 +1649,13 @@ void display_list(uint8_t list_index) {
   // get the pixel height of the font
   #ifdef USE_OFR_FONTS
     if (dtb_font != 0) {
+      SERIAL_PRINT("ofr_font_size: ");
+      SERIAL_PRINTLN(lists[list_index].render_options.ofr_font_size);
       font_height = lists[list_index].render_options.ofr_font_height; //lists[list_index].render_options.ofr_font_size;
     } else {
   #endif
+      SERIAL_PRINT("text_size: ");
+      SERIAL_PRINTLN(lists[list_index].render_options.text_size);
       tft.setTextSize(lists[list_index].render_options.text_size);
       font_height = tft.fontHeight();
   #ifdef USE_OFR_FONTS
@@ -1892,36 +1879,32 @@ void display_beacon_control() {
   }
 }
 
-// ** darth_update - UPDATE - start
-// changing to about from splash.  This is the original SPLASH screen just renamed ABOUT
-// a replacement About screen may be create later for reflect MOD.
-
-// display the about screen seen when the program starts
-void display_about() {
+// display the splash screen seen when the program starts
+void display_splash() {
   uint16_t y = 0, c;
   uint8_t tmp_font;
   char msg[MSG_LEN_MAX];
 
   // location the Y position to begin drawing to center vertically the text
   tft.setTextSize(1);
-  y = (tft.height() - (tft.fontHeight() * ((ABOUT_TEXT_SIZE * 6) + 1))) / 2;
+  y = (tft.height() - (tft.fontHeight() * ((SPLASH_TEXT_SIZE * 6) + 1))) / 2;
   tft.setCursor(0, y);
 
   // title
-  dtb_draw_string(msg_title, tft.getViewportWidth()/2, y, tft.getViewportWidth(), ABOUT_TEXT_SIZE + 1, ABOUT_TITLE_COLOR, TC_DATUM);
+  dtb_draw_string(msg_title, tft.getViewportWidth()/2, y, tft.getViewportWidth(), SPLASH_TEXT_SIZE + 1, SPLASH_TITLE_COLOR, TC_DATUM);
   y += tft.fontHeight();
 
   // contact
-  dtb_draw_string(msg_email, tft.getViewportWidth()/2, y, DEFAULT_TEXT_FIT_WIDTH, ABOUT_TEXT_SIZE, ABOUT_SUBTITLE_COLOR, TC_DATUM);
+  dtb_draw_string(msg_email, tft.getViewportWidth()/2, y, DEFAULT_TEXT_FIT_WIDTH, SPLASH_TEXT_SIZE, SPLASH_SUBTITLE_COLOR, TC_DATUM);
   y += (tft.fontHeight() * 2);
 
   // press any button...
-  dtb_draw_string(msg_continue1, tft.getViewportWidth()/2, y, DEFAULT_TEXT_FIT_WIDTH, ABOUT_TEXT_SIZE, ABOUT_TEXT_COLOR, TC_DATUM);
+  dtb_draw_string(msg_continue1, tft.getViewportWidth()/2, y, DEFAULT_TEXT_FIT_WIDTH, SPLASH_TEXT_SIZE, SPLASH_TEXT_COLOR, TC_DATUM);
   y += tft.fontHeight();
 
   // passing a text size of 0, causing dtb_draw_string() to use whatever the current font size is; this way both lines of 'press any button...' will
   // be the same size.
-  dtb_draw_string(msg_continue2, tft.getViewportWidth()/2, y, DEFAULT_TEXT_FIT_WIDTH, 0, ABOUT_TEXT_COLOR, TC_DATUM);
+  dtb_draw_string(msg_continue2, tft.getViewportWidth()/2, y, DEFAULT_TEXT_FIT_WIDTH, 0, SPLASH_TEXT_COLOR, TC_DATUM);
 
   #ifdef USE_OFR_FONTS
     // backup dtb_font
@@ -1933,11 +1916,11 @@ void display_about() {
   #endif
 
   // version
-  dtb_draw_string(msg_version, tft.getViewportWidth(), tft.getViewportHeight(), tft.getViewportWidth()/2, ABOUT_TEXT_SIZE, ABOUT_VERSION_COLOR, BR_DATUM);
+  dtb_draw_string(msg_version, tft.getViewportWidth(), tft.getViewportHeight(), tft.getViewportWidth()/2, SPLASH_TEXT_SIZE, SPLASH_VERSION_COLOR, BR_DATUM);
 
   // battery voltage
   y = (analogRead(BAT_ADC_PIN) * 2 * 3.3 * 1000) / 4096;
-  c = ABOUT_VERSION_COLOR;
+  c = SPLASH_VERSION_COLOR;
   if (y < 3400) {
     c = C565(128,0,0);        // need to charge the battery
   } else if (y < 3800) {
@@ -1945,18 +1928,16 @@ void display_about() {
   } else if (y < 4400) {
     c = C565(0,128,0);        // battery is charged
   } else {
-    c = ABOUT_VERSION_COLOR; // you're probably on USB
+    c = SPLASH_VERSION_COLOR; // you're probably on USB
   }
   snprintf(msg, MSG_LEN_MAX, "%s:%.2fV", (y<4400 ? "BAT" : "PWR"), (y / (float)1000));
-  dtb_draw_string(msg, 0, tft.getViewportHeight(), tft.getViewportWidth()/2, ABOUT_TEXT_SIZE, c, BL_DATUM);
+  dtb_draw_string(msg, 0, tft.getViewportHeight(), tft.getViewportWidth()/2, SPLASH_TEXT_SIZE, c, BL_DATUM);
 
   #ifdef USE_OFR_FONTS
     // restore dtb_font
     dtb_font = tmp_font;
   #endif
 }
-
-// ** darth_update - end
 
 void display_scanner_results() {
   char msg[MSG_LEN_MAX];
@@ -2484,14 +2465,9 @@ void update_display() {
       display_captioned_menu(msg_select, LIST_TOP_MENU);
       break;
 
-// ** darth_update - UPDATE - start
-// changing SPLASH Screen to About Screen
-
-    case ABOUT:                 // display_about()
-      display_about();
+    case SPLASH:                 // display_splash()
+      display_splash();
       break;
-
-// ** darth_update - end      
   }
 
   tft_update = false;
@@ -2505,13 +2481,9 @@ void button1(button_press_t press_type) {
   SERIAL_PRINTLN("Button 1 Press");
 
   switch (state) {
-// ** darth_update - UPDATE - start
-// change SPLASH to ABOUT
 
     // on splash screen
-    case ABOUT:
-
-// ** darth_update - end
+    case SPLASH:
 
       // only swap fonts if USE_OFR_FONTS is defined
       #ifdef USE_OFR_FONTS
@@ -2524,16 +2496,15 @@ void button1(button_press_t press_type) {
             }
 
             // load the new font
-            ofr.unloadFont();
-            if (dtb_font != 0 && ofr.loadFont(dtb_fonts[dtb_font - 1].data, dtb_fonts[dtb_font - 1].size)) {
-              dtb_font = 0;
-            }
-
-            // recalculate font properties based on new font
-            list_calculate_dynamic_font_properties();
+            dtb_load_font();
 
         // otherwise go to the top menu
         } else {
+
+          // before exiting the splash screen, store the current font to NVS
+          #ifdef USE_NVS
+            preferences.putUChar("dtb_font", dtb_font);
+          #endif
       #endif
 
         state = TOP_MENU;
@@ -2841,20 +2812,21 @@ void button2(button_press_t press_type) {
 
   // do button 2 stuff
   switch (state) {
-// ** darth_update - UPDATE - start    
-// Change SPLASH to ABOUT
+    case SPLASH:
 
-    case ABOUT:
+      // before exiting the splash screen, store the current font to NVS
+      #if defined (USE_OFR_FONTS) && defined (USE_NVS)
+        preferences.putUChar("dtb_font", dtb_font);
+      #endif
+
       state = TOP_MENU;
       selected_item = 0;
       tft_update = true;
       break;
 
-// ** darth_update - end
-
     case TOP_MENU:
       if (press_type == LONG_PRESS) {
-        state = ABOUT;
+        state = SPLASH;
         selected_item = 0;
       } else {
         selected_item++;
@@ -3119,6 +3091,9 @@ void button_handler() {
 void setup() {
   uint8_t i;
 
+  // init serial
+  SERIAL_BEGIN(115200);
+
   // T-Display-S3 needs this in order to run off battery
   #ifdef TDISPLAYS3
     pinMode(15, OUTPUT);
@@ -3132,7 +3107,7 @@ void setup() {
 
   // attach ofr to tft
   #ifdef USE_OFR_FONTS
-    ofr.setDrawer(tft);
+    ofr.setDrawer(tft);  
   #endif
 
   // setup buttons as input
@@ -3197,8 +3172,17 @@ void setup() {
   list_init();
   list_calculate_dynamic_font_properties();
 
-  // init serial debug messaging
-  SERIAL_BEGIN(115200);
+  // initialize NVS
+  #if defined (USE_NVS) && defined (USE_OFR_FONTS)
+    preferences.begin(PREF_APP_NAME, false); 
+    //preferences.clear();
+
+    // load stored font
+    dtb_font = (uint8_t)preferences.getUChar("dtb_font", 0);
+    dtb_load_font();
+  #endif
+
+  // end of setup
   SERIAL_PRINTLN("Ready!");
 }
 
@@ -3206,27 +3190,6 @@ void loop() {
   static uint16_t s = 0;
 
   button_handler();
-  
-  // ** darth_update - ADD - etart
-
-    // Adding section will use one of the OFR fonts at startup
-
-    #ifdef USE_OFR_FONTS
-      if (ofr_boot== 1) {
-        
-        ofr.unloadFont();
-        if (dtb_font != 0 && ofr.loadFont(dtb_fonts[dtb_font - 1].data, dtb_fonts[dtb_font - 1].size)) {
-          dtb_font = 0;
-        }
-
-        // recalculate font properties based on new font
-        list_calculate_dynamic_font_properties();
-
-        ofr_boot= 0;
-      }
-    #endif
-  
-  // ** darth_update - end
 
   switch (state) {
 
